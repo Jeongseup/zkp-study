@@ -1,14 +1,21 @@
+use std::vec;
+
 use halo2_proofs::{
     circuit::{AssignedCell, Chip, Layouter, SimpleFloorPlanner, Value},
     dev::MockProver,
-    pasta::Fp,
-    plonk::{Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance, Selector},
-    poly::Rotation,
+    pasta::{EqAffine, Fp},
+    plonk::{
+        create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Circuit, Column,
+        ConstraintSystem, Error, Fixed, Instance, Selector, SingleVerifier,
+    },
+    poly::{commitment::Params, Rotation},
+    transcript::{self, Blake2bRead, Blake2bWrite, Challenge255},
 };
 use plotters::{
     prelude::{BitMapBackend, IntoDrawingArea},
     style::WHITE,
 };
+use rand::rngs::OsRng;
 
 // chip에 들어가야 할 trait interfaces. 공식문서에서는 instructions라고 표기 됨.
 trait Ops {
@@ -198,7 +205,7 @@ struct MyConfig {
 }
 
 // codes for circuit
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct MyCircuit {
     x: Value<Fp>,
     constant: Fp,
@@ -274,23 +281,55 @@ fn main() {
     };
 
     let public_inputs = vec![res];
-    // let prover = MockProver::run(k, &circuit, vec![public_inputs]).unwrap();
-    // assert_eq!(prover.verify(), Ok(()));
+    let prover = MockProver::run(k, &circuit, vec![public_inputs.clone()]).unwrap();
+    assert_eq!(prover.verify(), Ok(()));
 
-    let root = BitMapBackend::new("layout.png", (1024, 768)).into_drawing_area();
-    root.fill(&WHITE).unwrap();
-    let root = root
-        .titled("Example Circuit Layout", ("sans-serif", 60))
-        .unwrap();
+    // actually, in the real network, created by universial setup ceremony
+    let params: Params<EqAffine> = Params::new(k);
 
-    halo2_proofs::dev::CircuitLayout::default()
-        // You can optionally render only a section of the circuit.
-        .view_width(0..2)
-        .view_height(0..16)
-        // You can hide labels, which can be useful with smaller areas.
-        .show_labels(false)
-        // Render the circuit onto your area!
-        // The first argument is the size parameter for the circuit.
-        .render(5, &circuit, &root)
-        .unwrap();
+    let vk = keygen_vk(&params, &circuit).unwrap();
+    let pk = keygen_pk(&params, vk, &circuit).unwrap();
+    let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+
+    create_proof(
+        &params,
+        &pk,
+        &[circuit.clone()],
+        &[&[&[res]]],
+        OsRng,
+        &mut transcript,
+    )
+    .unwrap();
+
+    let proof = transcript.finalize();
+    println!("{}", proof.len());
+
+    let strategy = SingleVerifier::new(&params);
+    let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
+    assert!(verify_proof(
+        &params,
+        pk.get_vk(),
+        strategy,
+        &[&[&public_inputs[..]]],
+        &mut transcript
+    )
+    .is_ok());
+
+    // drawing my circuit
+    // let root = BitMapBackend::new("layout.png", (1024, 768)).into_drawing_area();
+    // root.fill(&WHITE).unwrap();
+    // let root = root
+    //     .titled("Example Circuit Layout", ("sans-serif", 60))
+    //     .unwrap();
+
+    // halo2_proofs::dev::CircuitLayout::default()
+    //     // You can optionally render only a section of the circuit.
+    //     .view_width(0..2)
+    //     .view_height(0..16)
+    //     // You can hide labels, which can be useful with smaller areas.
+    //     .show_labels(false)
+    //     // Render the circuit onto your area!
+    //     // The first argument is the size parameter for the circuit.
+    //     .render(5, &circuit, &root)
+    //     .unwrap();
 }

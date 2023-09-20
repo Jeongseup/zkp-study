@@ -1,0 +1,5 @@
+# general dummies
+.DS_Store
+
+# rust dummies
+target/*
